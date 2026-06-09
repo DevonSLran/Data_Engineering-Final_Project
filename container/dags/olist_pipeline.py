@@ -3,6 +3,8 @@ Olist medallion ELT pipeline.
 
 Runs the whole flow on a daily schedule, one task after another:
 
+    extract_raw        download + verify the 9 Olist CSVs into data/raw
+        |
     load_bronze        raw CSVs -> bronze schema (Python COPY loader)
         |
     dbt_run_staging    bronze -> staging (silver) views
@@ -12,6 +14,8 @@ Runs the whole flow on a daily schedule, one task after another:
     dbt_run_marts      staging -> marts (gold) star-schema tables
         |
     dbt_test_marts     PK + referential-integrity tests on the gold layer
+        |
+    dbt_docs_generate  build the dbt docs site (manifest + catalog)
 
 dbt lives in an isolated venv inside the Airflow image; we call it by its
 absolute path so it never collides with Airflow's own dependencies.
@@ -42,6 +46,11 @@ with DAG(
     tags=["olist", "medallion", "dbt"],
 ) as dag:
 
+    extract_raw = BashOperator(
+        task_id="extract_raw",
+        bash_command="python /opt/airflow/ingestion/download_data.py",
+    )
+
     load_bronze = BashOperator(
         task_id="load_bronze",
         bash_command="python /opt/airflow/ingestion/load_raw.py",
@@ -67,4 +76,17 @@ with DAG(
         bash_command=f"{DBT} test --select marts {DBT_FLAGS}",
     )
 
-    load_bronze >> dbt_run_staging >> dbt_test_staging >> dbt_run_marts >> dbt_test_marts
+    dbt_docs_generate = BashOperator(
+        task_id="dbt_docs_generate",
+        bash_command=f"{DBT} docs generate {DBT_FLAGS}",
+    )
+
+    (
+        extract_raw
+        >> load_bronze
+        >> dbt_run_staging
+        >> dbt_test_staging
+        >> dbt_run_marts
+        >> dbt_test_marts
+        >> dbt_docs_generate
+    )

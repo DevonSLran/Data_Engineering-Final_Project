@@ -79,9 +79,12 @@ services:
       - warehouse-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${WAREHOUSE_USER}", "-d", "${WAREHOUSE_DB}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      # On a fresh volume Postgres runs initdb first; keep the container in
+      # "starting" (not "unhealthy") during that window so dependents don't abort.
+      start_period: 60s
 
   airflow-db:
     image: postgres:16
@@ -94,9 +97,10 @@ services:
       - airflow-db-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${AIRFLOW_DB_USER}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 60s
 
   airflow-init:
     <<: *airflow-common
@@ -131,9 +135,11 @@ services:
       - "${AIRFLOW_PORT:-8000}:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
-      interval: 30s
+      interval: 15s
       timeout: 10s
       retries: 5
+      # Airflow 3 api-server takes ~30-90s to come up; don't flap as unhealthy.
+      start_period: 120s
     restart: unless-stopped
     depends_on:
       airflow-init:

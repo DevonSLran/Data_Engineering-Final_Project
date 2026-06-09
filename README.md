@@ -38,7 +38,7 @@ flowchart LR
     G --> MB["Metabase<br/>dashboards"]
 
     subgraph AF["Apache Airflow — olist_elt_pipeline (daily)"]
-        T1["load_bronze"] --> T2["dbt_run_staging"] --> T3["dbt_test_staging"] --> T4["dbt_run_marts"] --> T5["dbt_test_marts"]
+        T0["extract_raw"] --> T1["load_bronze"] --> T2["dbt_run_staging"] --> T3["dbt_test_staging"] --> T4["dbt_run_marts"] --> T5["dbt_test_marts"] --> T6["dbt_docs_generate"]
     end
 
     AF -.orchestrates.-> PG
@@ -65,8 +65,9 @@ marketplaces, spread over 9 related CSV files.
 > **Data provenance:** the canonical source is Kaggle (link above). For this
 > build the files were pulled from a public **Hugging Face mirror**
 > (`aviahYadler/Olist_Ecommerce_Dataset`) because the build environment had no
-> Kaggle credentials. All nine files were verified row-for-row against the
-> canonical Olist counts before use.
+> Kaggle credentials. `download_data.py` verifies every file against both its
+> canonical Olist **row count** and a pinned **SHA-256 checksum**, so a
+> tampered or swapped mirror can't slip through unnoticed.
 
 | File | Bronze table | Rows |
 |------|--------------|------|
@@ -96,6 +97,7 @@ DATA_ENG_ALP/
 │   └── dags/
 │       └── olist_pipeline.py   # the Airflow DAG
 ├── ingestion/
+│   ├── download_data.py        # Extract: fetch + verify the 9 CSVs (row count + SHA256)
 │   └── load_raw.py             # Bronze loader (idempotent COPY)
 ├── dbt/
 │   ├── dbt_project.yml
@@ -133,7 +135,7 @@ docker compose up -d
 
 # 5. Run the pipeline
 #    In Airflow: enable the `olist_elt_pipeline` DAG and click ▶ Trigger.
-#    It completes end-to-end in ~35 seconds.
+#    All 7 tasks complete end-to-end in ~1–2 minutes.
 ```
 
 > **Windows (PowerShell)** — steps 1, 3, 4 and 5 are identical; only the
@@ -148,7 +150,7 @@ docker compose up -d
 
 > The data is **not** committed to git (it's large and gitignored), so step 1
 > is required on a fresh clone. The download script is idempotent — files
-> already present with the correct row count are skipped.
+> already present with a matching row count **and** SHA-256 checksum are skipped.
 
 > **Ports note:** this project intentionally uses non-default host ports
 > (warehouse `5442`, Airflow `8000`) to avoid clashing with anything already
@@ -180,7 +182,11 @@ stg_products   stg_order_payments   stg_order_reviews   stg_geolocation
 ### 🥇 Gold — `dbt/models/marts/`
 
 A classic **star schema** materialized as physical tables — one fact at the
-order-item grain, surrounded by four conformed dimensions.
+order-item grain, surrounded by four conformed dimensions. `fct_order_items` is
+materialized **`incremental`** (on `order_purchase_timestamp`, keyed by
+`order_item_key`): a `--full-refresh` builds every row, while a normal daily run
+only (re)loads orders at/after the high-water mark and `delete+insert`s them —
+so re-running the same day is idempotent and cheap.
 
 ```mermaid
 erDiagram
@@ -242,22 +248,30 @@ erDiagram
 ## Orchestration
 
 The Airflow DAG **`olist_elt_pipeline`** runs the whole flow on a `@daily`
-schedule, one task after another. If any data-quality test fails, the run
-stops — bad data never reaches Gold.
+schedule, one task after another — **extract and load included**, so the entire
+ingestion-to-docs path is orchestrated, not just the transforms. If any
+data-quality test fails, the run stops — bad data never reaches Gold.
 
 ```
-load_bronze → dbt_run_staging → dbt_test_staging → dbt_run_marts → dbt_test_marts
+extract_raw → load_bronze → dbt_run_staging → dbt_test_staging
+            → dbt_run_marts → dbt_test_marts → dbt_docs_generate
 ```
 
-<!-- SCREENSHOT: Airflow DAG graph view showing all 5 tasks green (success) -->
-> 📸 _Airflow DAG graph screenshot — to be added._
+- **`extract_raw`** — runs `download_data.py` (idempotent: skips files already
+  present with the right row count + checksum). Needs outbound internet only on
+  the first run.
+- **`load_bronze`** — full-refresh COPY into `bronze`.
+- **`dbt_run/test_*`** — build + test Silver, then Gold.
+- **`dbt_docs_generate`** — builds the dbt docs site (`manifest.json` + `catalog.json`).
+
+![Airflow DAG — olist_elt_pipeline, all 7 tasks green](img/airflow_Dag.png)
 
 ---
 
 ## Data quality
 
 Tests are defined in dbt (`_staging.yml`, `_marts.yml`) and run as dedicated
-DAG tasks. **62 tests** total, all passing:
+DAG tasks. **49 data tests** across the Silver and Gold layers, all passing:
 
 - **Primary keys** — `unique` + `not_null` on every dimension PK and the fact's surrogate key.
 - **Referential integrity** — `relationships` tests on all four foreign keys from `fct_order_items` to its dimensions.
@@ -268,6 +282,21 @@ DAG tasks. **62 tests** total, all passing:
 # run all transformations + tests manually (outside Airflow)
 docker compose exec airflow-scheduler /opt/dbt-venv/bin/dbt build \
   --project-dir /opt/airflow/dbt --profiles-dir /opt/airflow/dbt
+```
+
+---
+
+## dbt documentation
+
+The DAG's final task (`dbt_docs_generate`) builds the dbt docs site
+(`target/manifest.json` + `catalog.json`) on every run. To browse the
+auto-generated model/column lineage and descriptions locally:
+
+```bash
+docker compose exec airflow-scheduler /opt/dbt-venv/bin/dbt docs generate \
+  --project-dir /opt/airflow/dbt --profiles-dir /opt/airflow/dbt
+docker compose exec airflow-scheduler /opt/dbt-venv/bin/dbt docs serve \
+  --project-dir /opt/airflow/dbt --profiles-dir /opt/airflow/dbt --port 8080
 ```
 
 ---
@@ -304,13 +333,24 @@ questions.
 
 ## Design decisions & notes
 
+- **"Daily" on a static dataset.** The Olist source is a fixed 2016–2018
+  historical dump, so there is no genuinely "new" data each day. The pipeline
+  is honest about this: Bronze is a daily **full refresh** (drop + reload), and
+  `fct_order_items` loads **incrementally** on `order_purchase_timestamp`. Both
+  make re-running a given day **idempotent** — the same input always yields the
+  same warehouse state — which is the property the daily schedule is meant to
+  demonstrate. On a live feed the incremental fact would pick up only the new
+  slice; here it's a no-op after the first load.
 - **dbt in an isolated venv.** dbt is installed into its own
   `/opt/dbt-venv` inside the Airflow image (from a fully-pinned
   `dbt-requirements.txt` lockfile) so its dependencies never collide with
   Airflow's pinned constraint set. The DAG calls it by absolute path.
-- **`customer_id` vs `customer_unique_id`.** In Olist, `customer_id` is
-  generated per *order*; `customer_unique_id` identifies the real person. The
-  fact joins on `customer_id`; use `customer_unique_id` to count unique buyers.
+- **`dim_customers` grain.** It's keyed on `customer_id`, which in Olist is
+  generated **per order** (one row per order, 99,441 total) — not on the real
+  person. That's deliberate: the fact only carries the order-scoped
+  `customer_id`, so the dimension must match that grain to join. The true-person
+  key, `customer_unique_id`, is carried through as an attribute, so unique-buyer
+  counts are still one `count(distinct …)` away.
 - **Geolocation & reviews excluded from Gold.** Both are available in
   Bronze/Silver but don't fit the order-item grain cleanly (geolocation has
   ~1M rows with no clean FK; reviews repeat `review_id`), so they're kept out
@@ -319,6 +359,10 @@ questions.
   dag-processor into separate services and requires
   `AIRFLOW__CORE__EXECUTION_API_SERVER_URL` and a shared
   `AIRFLOW__API_AUTH__JWT_SECRET` across containers for task execution to work.
+- **Production hardening (not built).** This is a course project: tasks use
+  `retries: 1` and there's no alerting. For production I'd add an
+  `on_failure_callback` (Slack/email), more aggressive retries with backoff,
+  SLAs on the DAG, and source-freshness checks via `dbt source freshness`.
 
 ---
 
