@@ -44,7 +44,7 @@ flowchart LR
     AF -.orchestrates.-> PG
 ```
 
-This is an ELT pipeline rather than ETL: data lands raw first, then every
+This is an ELT pipeline: data lands raw first, then every
 transformation happens inside the warehouse with dbt. Each medallion layer
 adds another round of cleaning and structure:
 
