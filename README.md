@@ -6,7 +6,7 @@ orchestrated by **Apache Airflow**.
 
 Raw CSVs are loaded into PostgreSQL (Bronze), cleaned and typed with dbt
 (Silver), and modeled into a **star schema** (Gold) that powers Metabase
-dashboards — the whole flow runs on a schedule, end-to-end, inside Docker.
+dashboards. The whole flow runs on a schedule, end-to-end, inside Docker.
 
 | | |
 |---|---|
@@ -44,22 +44,22 @@ flowchart LR
     AF -.orchestrates.-> PG
 ```
 
-The pipeline is **ELT, not ETL**: data lands raw first, then every
-transformation happens *inside* the warehouse with dbt. Each medallion layer
-adds trust:
+This is an ELT pipeline rather than ETL: data lands raw first, then every
+transformation happens inside the warehouse with dbt. Each medallion layer
+adds another round of cleaning and structure:
 
 | Layer | Schema | What it is | Materialization |
 |-------|--------|------------|-----------------|
-| 🥉 **Bronze** | `bronze` | Exact copy of source CSVs, all columns `TEXT`, no logic | tables (full refresh) |
-| 🥈 **Silver** | `staging` | Cleaned, renamed, correctly-typed | views |
-| 🥇 **Gold** | `marts` | Star schema (fact + dimensions) for BI | tables |
+| **Bronze** | `bronze` | Exact copy of source CSVs, all columns `TEXT`, no logic | tables (full refresh) |
+| **Silver** | `staging` | Cleaned, renamed, correctly-typed | views |
+| **Gold** | `marts` | Star schema (fact + dimensions) for BI | tables |
 
 ---
 
 ## Dataset
 
-The **[Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)**
-— ~100K orders placed between 2016–2018 across multiple Brazilian
+The **[Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)**:
+about 100K orders placed between 2016 and 2018 across multiple Brazilian
 marketplaces, spread over 9 related CSV files.
 
 > **Data provenance:** the canonical source is Kaggle (link above). For this
@@ -67,7 +67,7 @@ marketplaces, spread over 9 related CSV files.
 > (`aviahYadler/Olist_Ecommerce_Dataset`) because the build environment had no
 > Kaggle credentials. `download_data.py` verifies every file against both its
 > canonical Olist **row count** and a pinned **SHA-256 checksum**, so a
-> tampered or swapped mirror can't slip through unnoticed.
+> tampered or swapped mirror is caught before it loads.
 
 | File | Bronze table | Rows |
 |------|--------------|------|
@@ -138,7 +138,7 @@ docker compose up -d
 #    All 7 tasks complete end-to-end in ~1–2 minutes.
 ```
 
-> **Windows (PowerShell)** — steps 1, 3, 4 and 5 are identical; only the
+> **Windows (PowerShell):** steps 1, 3, 4 and 5 are identical; only the
 > configure step differs (no `cp` / `id -u`):
 >
 > ```powershell
@@ -149,8 +149,8 @@ docker compose up -d
 > ```
 
 > The data is **not** committed to git (it's large and gitignored), so step 1
-> is required on a fresh clone. The download script is idempotent — files
-> already present with a matching row count **and** SHA-256 checksum are skipped.
+> is required on a fresh clone. The download script is idempotent: files
+> already present with a matching row count and SHA-256 checksum are skipped.
 
 > **Ports note:** this project intentionally uses non-default host ports
 > (warehouse `5442`, Airflow `8000`) to avoid clashing with anything already
@@ -160,32 +160,32 @@ docker compose up -d
 
 ## Pipeline walkthrough
 
-### 🥉 Bronze — `ingestion/load_raw.py`
+### Bronze — `ingestion/load_raw.py`
 
-A pure-Python loader that `COPY`s each CSV into the `bronze` schema with **all
-columns as `TEXT`** — a faithful, untransformed copy of the source. It is
-**idempotent**: every run drops and recreates each table, so re-running always
-yields the same state (a full refresh). `COPY` is used for speed (the
-geolocation file alone is ~1M rows).
+A pure-Python loader that `COPY`s each CSV into the `bronze` schema with all
+columns as `TEXT`, an untransformed copy of the source. It is idempotent:
+every run drops and recreates each table, so re-running always yields the same
+state (a full refresh). `COPY` is used for speed (the geolocation file alone is
+~1M rows).
 
-### 🥈 Silver — `dbt/models/staging/`
+### Silver — `dbt/models/staging/`
 
-Eight dbt **views** (no data stored) that sit on top of Bronze and do three
-things: **cast types**, **rename** columns, and **join** trivial lookups
-(products gets its English category name here).
+Eight dbt views (no data stored) that sit on top of Bronze. Each one casts
+types, renames columns, and joins in trivial lookups (products gets its English
+category name here).
 
 ```
 stg_orders   stg_order_items   stg_customers   stg_sellers
 stg_products   stg_order_payments   stg_order_reviews   stg_geolocation
 ```
 
-### 🥇 Gold — `dbt/models/marts/`
+### Gold — `dbt/models/marts/`
 
-A classic **star schema** materialized as physical tables — one fact at the
-order-item grain, surrounded by four conformed dimensions. `fct_order_items` is
-materialized **`incremental`** (on `order_purchase_timestamp`, keyed by
-`order_item_key`): a `--full-refresh` builds every row, while a normal daily run
-only (re)loads orders at/after the high-water mark and `delete+insert`s them —
+A star schema materialized as physical tables: one fact at the order-item
+grain, surrounded by four conformed dimensions. `fct_order_items` is
+materialized `incremental` (on `order_purchase_timestamp`, keyed by
+`order_item_key`). A `--full-refresh` builds every row, while a normal daily run
+only (re)loads orders at or after the high-water mark and `delete+insert`s them,
 so re-running the same day is idempotent and cheap.
 
 ```mermaid
@@ -248,21 +248,21 @@ erDiagram
 ## Orchestration
 
 The Airflow DAG **`olist_elt_pipeline`** runs the whole flow on a `@daily`
-schedule, one task after another — **extract and load included**, so the entire
+schedule, one task after another. Extract and load are included, so the entire
 ingestion-to-docs path is orchestrated, not just the transforms. If any
-data-quality test fails, the run stops — bad data never reaches Gold.
+data-quality test fails the run stops before anything reaches Gold.
 
 ```
 extract_raw → load_bronze → dbt_run_staging → dbt_test_staging
             → dbt_run_marts → dbt_test_marts → dbt_docs_generate
 ```
 
-- **`extract_raw`** — runs `download_data.py` (idempotent: skips files already
+- **`extract_raw`**: runs `download_data.py` (idempotent: skips files already
   present with the right row count + checksum). Needs outbound internet only on
   the first run.
-- **`load_bronze`** — full-refresh COPY into `bronze`.
-- **`dbt_run/test_*`** — build + test Silver, then Gold.
-- **`dbt_docs_generate`** — builds the dbt docs site (`manifest.json` + `catalog.json`).
+- **`load_bronze`**: full-refresh COPY into `bronze`.
+- **`dbt_run/test_*`**: build + test Silver, then Gold.
+- **`dbt_docs_generate`**: builds the dbt docs site (`manifest.json` + `catalog.json`).
 
 ![Airflow DAG — olist_elt_pipeline, all 7 tasks green](img/airflow_Dag.png)
 
@@ -273,10 +273,10 @@ extract_raw → load_bronze → dbt_run_staging → dbt_test_staging
 Tests are defined in dbt (`_staging.yml`, `_marts.yml`) and run as dedicated
 DAG tasks. **49 data tests** across the Silver and Gold layers, all passing:
 
-- **Primary keys** — `unique` + `not_null` on every dimension PK and the fact's surrogate key.
-- **Referential integrity** — `relationships` tests on all four foreign keys from `fct_order_items` to its dimensions.
-- **Domain checks** — `accepted_values` on `order_status` (8 valid states), `payment_type`, and `review_score` (1–5).
-- **Documented quirks** — `review_id` is intentionally *not* tested for uniqueness (the Olist source legitimately repeats it across orders).
+- **Primary keys:** `unique` + `not_null` on every dimension PK and the fact's surrogate key.
+- **Referential integrity:** `relationships` tests on all four foreign keys from `fct_order_items` to its dimensions.
+- **Domain checks:** `accepted_values` on `order_status` (8 valid states), `payment_type`, and `review_score` (1–5).
+- **Documented quirks:** `review_id` is intentionally *not* tested for uniqueness (the Olist source legitimately repeats it across orders).
 
 ```bash
 # run all transformations + tests manually (outside Airflow)
@@ -308,7 +308,7 @@ questions.
 
 > **Metabase connection note:** Metabase runs *inside* the Docker network, so
 > connect it to the warehouse using host **`warehouse`** and port **`5432`**
-> (the internal port) — *not* `localhost:5442`.
+> (the internal port), not `localhost:5442`.
 
 <!-- ============================================================ -->
 <!-- TODO (teammate): Metabase dashboards + screenshots           -->
@@ -318,17 +318,19 @@ questions.
 
 ![Revenue by Product Category](img/Revenue_by_Product_Category.png)
 
-> 📸 Revenue distribution by product category.
+> Revenue distribution by product category.
+
 ### 2. Monthly Revenue Trend
 
 ![Monthly Revenue Trend](img/Monthly_Revenue_Trend.png)
 
-> 📸 Monthly revenue trend analysis.
+> Monthly revenue trend analysis.
+
 ### 3. Delivery Performance by State
 
 ![Delivery Performance by State](img/Delivery_Performance_by_State.png)
 
-> 📸 Delivery performance comparison across states.
+> Delivery performance comparison across states.
 ---
 
 ## Design decisions & notes
@@ -337,8 +339,8 @@ questions.
   historical dump, so there is no genuinely "new" data each day. The pipeline
   is honest about this: Bronze is a daily **full refresh** (drop + reload), and
   `fct_order_items` loads **incrementally** on `order_purchase_timestamp`. Both
-  make re-running a given day **idempotent** — the same input always yields the
-  same warehouse state — which is the property the daily schedule is meant to
+  make re-running a given day idempotent (the same input always yields the
+  same warehouse state), which is the property the daily schedule is meant to
   demonstrate. On a live feed the incremental fact would pick up only the new
   slice; here it's a no-op after the first load.
 - **dbt in an isolated venv.** dbt is installed into its own
@@ -346,7 +348,7 @@ questions.
   `dbt-requirements.txt` lockfile) so its dependencies never collide with
   Airflow's pinned constraint set. The DAG calls it by absolute path.
 - **`dim_customers` grain.** It's keyed on `customer_id`, which in Olist is
-  generated **per order** (one row per order, 99,441 total) — not on the real
+  generated **per order** (one row per order, 99,441 total), not on the real
   person. That's deliberate: the fact only carries the order-scoped
   `customer_id`, so the dimension must match that grain to join. The true-person
   key, `customer_unique_id`, is carried through as an attribute, so unique-buyer
