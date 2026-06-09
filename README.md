@@ -113,24 +113,32 @@ DATA_ENG_ALP/
 
 ## Quickstart
 
-**Prerequisites:** Docker + Docker Compose, and the 9 Olist CSVs in `data/raw/`.
+**Prerequisites:** Docker + Docker Compose, Python 3 (only for the data-download
+helper), and an internet connection on first run.
 
 ```bash
-# 1. Configure
+# 1. Get the raw data (downloads the 9 Olist CSVs into data/raw/, verifies them)
+python ingestion/download_data.py
+
+# 2. Configure
 cp .env.example .env
 echo "AIRFLOW_UID=$(id -u)" >> .env     # so bind-mounted logs stay writable
 
-# 2. Launch the whole stack
+# 3. Launch the whole stack
 docker compose up -d
 
-# 3. Open the UIs
+# 4. Open the UIs
 #    Airflow   → http://localhost:8000   (admin / admin)
 #    Metabase  → http://localhost:3000   (first-run setup wizard)
 
-# 4. Run the pipeline
+# 5. Run the pipeline
 #    In Airflow: enable the `olist_elt_pipeline` DAG and click ▶ Trigger.
 #    It completes end-to-end in ~35 seconds.
 ```
+
+> The data is **not** committed to git (it's large and gitignored), so step 1
+> is required on a fresh clone. The download script is idempotent — files
+> already present with the correct row count are skipped.
 
 > **Ports note:** this project intentionally uses non-default host ports
 > (warehouse `5442`, Airflow `8000`) to avoid clashing with anything already

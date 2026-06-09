@@ -15,6 +15,14 @@ RUN python -m venv /opt/dbt-venv \
     && /opt/dbt-venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/dbt-venv/bin/pip install --no-cache-dir -r /dbt-requirements.txt \
     && chown -R airflow:0 /opt/dbt-venv
+
+# Pre-create the dir that holds the SimpleAuthManager password file, owned by
+# airflow:0 and group-writable. A fresh named volume mounted here inherits this
+# ownership, so the init container (running as an arbitrary AIRFLOW_UID in group
+# 0) can write the seeded admin password — otherwise the mountpoint is root-only.
+RUN mkdir -p /opt/airflow/generated \
+    && chown airflow:0 /opt/airflow/generated \
+    && chmod 0775 /opt/airflow/generated
 USER airflow
 
 # --- light deps for the bronze ingestion script (into Airflow's env) ---

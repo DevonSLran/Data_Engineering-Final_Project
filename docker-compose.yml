@@ -101,15 +101,26 @@ services:
   airflow-init:
     <<: *airflow-common
     container_name: olist_airflow_init
-    # Only job: migrate the metadata DB schema.
-    # set -e makes a failed migration fail the container loudly (not silently).
-    # User/password are handled by the api-server on first boot (see top note).
+    # 1) migrate the metadata DB schema (set -e fails loudly on error)
+    # 2) seed a DETERMINISTIC admin password. Airflow 3's SimpleAuthManager
+    #    otherwise auto-generates a random password on first boot; pre-writing
+    #    the password file (only if absent) makes ${AIRFLOW_ADMIN_USER} /
+    #    ${AIRFLOW_ADMIN_PASSWORD} work out of the box on a fresh clone.
     command:
       - bash
       - -c
+      # NOTE: $$ escapes Compose interpolation so the container shell expands
+      # these (AIRFLOW_ADMIN_* come from env_file: .env). Single-$ would be
+      # eaten by Compose at parse time.
       - |
         set -e
         airflow db migrate
+        PW_FILE=/opt/airflow/generated/simple_auth_manager_passwords.json.generated
+        mkdir -p "$$(dirname "$$PW_FILE")"
+        if [ ! -f "$$PW_FILE" ]; then
+          echo "{\"$${AIRFLOW_ADMIN_USER}\": \"$${AIRFLOW_ADMIN_PASSWORD}\"}" > "$$PW_FILE"
+          echo "Seeded admin password file at $$PW_FILE"
+        fi
     restart: on-failure
 
   airflow-apiserver:
