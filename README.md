@@ -120,7 +120,7 @@ helper), and an internet connection on first run.
 # 1. Get the raw data (downloads the 9 Olist CSVs into data/raw/, verifies them)
 python ingestion/download_data.py
 
-# 2. Configure
+# 2. Configure  (macOS / Linux)
 cp .env.example .env
 echo "AIRFLOW_UID=$(id -u)" >> .env     # so bind-mounted logs stay writable
 
@@ -135,6 +135,16 @@ docker compose up -d
 #    In Airflow: enable the `olist_elt_pipeline` DAG and click ▶ Trigger.
 #    It completes end-to-end in ~35 seconds.
 ```
+
+> **Windows (PowerShell)** — steps 1, 3, 4 and 5 are identical; only the
+> configure step differs (no `cp` / `id -u`):
+>
+> ```powershell
+> # 2. Configure
+> Copy-Item .env.example .env
+> # AIRFLOW_UID is only needed for Linux bind-mount permissions. On Docker
+> # Desktop (Windows/macOS) the default 50000 already works, so leave .env as-is.
+> ```
 
 > The data is **not** committed to git (it's large and gitignored), so step 1
 > is required on a fresh clone. The download script is idempotent — files
