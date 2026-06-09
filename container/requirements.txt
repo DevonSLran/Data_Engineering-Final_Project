@@ -1,0 +1,3 @@
+# Runtime deps for the bronze ingestion script (ingestion/load_raw.py),
+# installed into Airflow's own Python environment.
+psycopg2-binary==2.9.9

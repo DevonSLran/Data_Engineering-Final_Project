@@ -1,0 +1,15 @@
+# Connection profile for the warehouse Postgres. All values come from the
+# environment (see .env.example) so the same file works on the host and inside
+# the Airflow container.
+olist:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('WAREHOUSE_HOST', 'localhost') }}"
+      port: "{{ env_var('WAREHOUSE_PORT', '5432') | int }}"
+      user: "{{ env_var('WAREHOUSE_USER', 'olist') }}"
+      password: "{{ env_var('WAREHOUSE_PASSWORD', 'olist') }}"
+      dbname: "{{ env_var('WAREHOUSE_DB', 'olist') }}"
+      schema: public
+      threads: 4

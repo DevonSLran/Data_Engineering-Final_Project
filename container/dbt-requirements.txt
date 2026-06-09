@@ -1,0 +1,66 @@
+# =============================================================================
+# dbt lockfile for the isolated /opt/dbt-venv inside the Airflow image.
+#
+# This is the FULL transitive closure (frozen from a known-good install), not
+# just dbt-core + dbt-postgres. Pinning only those two leaves sub-dependencies
+# like dbt-adapters / dbt-common free to drift on a rebuild — which is exactly
+# how an unpinned install originally pulled dbt-core 2.0.0a1. Locking the whole
+# tree makes the dbt environment byte-for-byte reproducible.
+#
+# To refresh after an intentional dbt upgrade:
+#   docker run --rm --entrypoint /opt/dbt-venv/bin/pip <image> freeze > container/dbt-requirements.txt
+# =============================================================================
+agate==1.9.1
+annotated-types==0.7.0
+attrs==26.1.0
+babel==2.18.0
+certifi==2026.5.20
+charset-normalizer==3.4.7
+click==8.4.1
+colorama==0.4.6
+daff==1.4.2
+dbt-adapters==1.16.3
+dbt-common==1.27.1
+dbt-core==1.8.9
+dbt-extractor==0.6.0
+dbt-postgres==1.8.2
+dbt-protos==1.0.514
+dbt-semantic-interfaces==0.5.1
+deepdiff==7.0.1
+idna==3.17
+importlib-metadata==6.11.0
+isodate==0.6.1
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+leather==0.4.1
+Logbook==1.5.3
+MarkupSafe==3.0.3
+mashumaro==3.14
+minimal-snowplow-tracker==0.0.2
+more-itertools==10.8.0
+msgpack==1.1.2
+networkx==3.6.1
+ordered-set==4.1.0
+packaging==26.2
+parsedatetime==2.6
+pathspec==0.12.1
+protobuf==5.29.6
+psycopg2-binary==2.9.12
+pydantic==2.13.4
+pydantic_core==2.46.4
+python-dateutil==2.9.0.post0
+python-slugify==8.0.4
+pytimeparse==1.1.8
+pytz==2026.2
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.5.1
+six==1.17.0
+sqlparse==0.5.5
+text-unidecode==1.3
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+urllib3==2.7.0
+zipp==4.1.0

@@ -1,0 +1,167 @@
+# ============================================================================
+# Olist medallion ELT — full local stack
+#   warehouse        : Postgres holding bronze / staging / marts schemas
+#   airflow-db       : Postgres for Airflow metadata (kept separate)
+#   airflow-init     : one-shot DB migrate
+#   airflow-*        : webserver (api-server in v3) + scheduler (LocalExecutor)
+#   metabase         : BI layer on top of the marts (gold) schema
+#
+# Airflow 3.0 auth notes:
+#   - airflow users create was removed in v3; auth is handled by
+#     SimpleAuthManager via AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS
+#   - On first start the api-server auto-generates and PRINTS the password
+#     to its logs: docker logs olist_airflow_apiserver | grep Password
+#   - In v3 the webserver is replaced by api-server (port 8080 inside,
+#     mapped to AIRFLOW_PORT on the host)
+# ============================================================================
+
+x-airflow-common: &airflow-common
+  build:
+    context: ./container
+    dockerfile: airflow.Dockerfile
+  env_file: .env
+  user: "${AIRFLOW_UID:-50000}:0"
+  environment: &airflow-common-env
+    # Root-cause guard: getpass.getuser() checks $USER before the passwd DB,
+    # so this prevents "getpwuid(): uid not found" from crashing any command
+    # when running as an arbitrary host UID — regardless of entrypoint.
+    USER: "airflow"
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/${AIRFLOW_DB_NAME}
+    # Airflow 3 SimpleAuthManager: define users via config.
+    # Password is auto-generated on first start and printed to api-server logs.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "${AIRFLOW_ADMIN_USER}:admin"
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "false"
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: "/opt/airflow/generated/simple_auth_manager_passwords.json.generated"
+    # Airflow 3: scheduler/workers call back to the api-server via this URL.
+    # Without it they default to localhost:8080 inside their own container and fail.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-apiserver:8080/execution/"
+    # All containers must share the same JWT secret so task-worker tokens are
+    # accepted by the api-server. Without this each container generates its own
+    # random secret at startup → "Signature verification failed".
+    AIRFLOW__API_AUTH__JWT_SECRET: "${AIRFLOW_JWT_SECRET:-olist-jwt-secret-change-me}"
+    # --- connection used by the ingestion script and dbt ---
+    WAREHOUSE_HOST: warehouse
+    WAREHOUSE_PORT: "5432"
+    WAREHOUSE_DB: ${WAREHOUSE_DB}
+    WAREHOUSE_USER: ${WAREHOUSE_USER}
+    WAREHOUSE_PASSWORD: ${WAREHOUSE_PASSWORD}
+    BRONZE_SCHEMA: bronze
+    RAW_DATA_DIR: /opt/airflow/data/raw
+    DBT_PROFILES_DIR: /opt/airflow/dbt
+    DBT_PROJECT_DIR: /opt/airflow/dbt
+  volumes:
+    - ./container/dags:/opt/airflow/dags
+    - ./container/logs:/opt/airflow/logs
+    - ./ingestion:/opt/airflow/ingestion
+    - ./dbt:/opt/airflow/dbt
+    - ./data:/opt/airflow/data
+    - airflow-home:/opt/airflow/generated  # persists the SimpleAuthManager password file
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+    warehouse:
+      condition: service_healthy
+
+services:
+  warehouse:
+    image: postgres:16
+    container_name: olist_warehouse
+    environment:
+      POSTGRES_USER: ${WAREHOUSE_USER}
+      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD}
+      POSTGRES_DB: ${WAREHOUSE_DB}
+    ports:
+      - "${WAREHOUSE_PORT_HOST:-5442}:5432"
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${WAREHOUSE_USER}", "-d", "${WAREHOUSE_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-db:
+    image: postgres:16
+    container_name: olist_airflow_db
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME}
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: olist_airflow_init
+    # Only job: migrate the metadata DB schema.
+    # set -e makes a failed migration fail the container loudly (not silently).
+    # User/password are handled by the api-server on first boot (see top note).
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        airflow db migrate
+    restart: on-failure
+
+  airflow-apiserver:
+    <<: *airflow-common
+    container_name: olist_airflow_apiserver
+    command: api-server
+    ports:
+      - "${AIRFLOW_PORT:-8000}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: olist_airflow_dag_processor
+    command: dag-processor
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: olist_airflow_scheduler
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: olist_metabase
+    ports:
+      - "${METABASE_PORT:-3000}:3000"
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+    volumes:
+      - metabase-data:/metabase-data
+    restart: unless-stopped
+    depends_on:
+      warehouse:
+        condition: service_healthy
+
+volumes:
+  warehouse-data:
+  airflow-db-data:
+  airflow-home:
+  metabase-data:
