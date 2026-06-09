@@ -285,15 +285,21 @@ questions.
 <!-- TODO (teammate): Metabase dashboards + screenshots           -->
 <!-- ============================================================ -->
 
-### 1. Revenue by product category
-> 🚧 _In progress — chart + screenshot to be added._
+### 1. Revenue by Product Category
 
-### 2. Monthly revenue trend
-> 🚧 _In progress — chart + screenshot to be added._
+![Revenue by Product Category](img/Revenue_by_Product_Category.png)
 
-### 3. Delivery performance by state
-> 🚧 _In progress — chart + screenshot to be added._
+> 📸 Revenue distribution by product category.
+### 2. Monthly Revenue Trend
 
+![Monthly Revenue Trend](img/Monthly_Revenue_Trend.png)
+
+> 📸 Monthly revenue trend analysis.
+### 3. Delivery Performance by State
+
+![Delivery Performance by State](img/Delivery_Performance_by_State.png)
+
+> 📸 Delivery performance comparison across states.
 ---
 
 ## Design decisions & notes
