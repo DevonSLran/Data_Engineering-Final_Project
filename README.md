@@ -4,18 +4,6 @@ An end-to-end, containerized **ELT pipeline** on the Brazilian E-Commerce
 (Olist) dataset, built on a three-layer **medallion architecture** and
 orchestrated by **Apache Airflow**.
 
-Raw CSVs are loaded into PostgreSQL (Bronze), cleaned and typed with dbt
-(Silver), and modeled into a **star schema** (Gold) that powers Metabase
-dashboards. The whole flow runs on a schedule, end-to-end, inside Docker.
-
-| | |
-|---|---|
-| **Warehouse** | PostgreSQL 16 |
-| **Transformations** | dbt 1.8 (`dbt-postgres`) |
-| **Orchestration** | Apache Airflow 3.0.1 (LocalExecutor) |
-| **BI** | Metabase |
-| **Packaging** | Docker Compose |
-
 ---
 
 ## Architecture
@@ -44,8 +32,19 @@ flowchart LR
     AF -.orchestrates.-> PG
 ```
 
-This is an ELT pipeline: data lands raw first, then every
-transformation happens inside the warehouse with dbt. Each medallion layer
+The Airflow DAG (boxes at the bottom) drives the whole path; each medallion
+schema inside PostgreSQL adds another round of cleaning and structure.
+
+---
+
+## Project description
+
+Raw CSVs are loaded into PostgreSQL (Bronze), cleaned and typed with dbt
+(Silver), and modeled into a **star schema** (Gold) that powers Metabase
+dashboards. The whole flow runs on a schedule, end-to-end, inside Docker.
+
+This is an **ELT** pipeline, not ETL: data lands raw first, then every
+transformation happens *inside* the warehouse with dbt. Each medallion layer
 adds another round of cleaning and structure:
 
 | Layer | Schema | What it is | Materialization |
@@ -53,6 +52,16 @@ adds another round of cleaning and structure:
 | **Bronze** | `bronze` | Exact copy of source CSVs, all columns `TEXT`, no logic | tables (full refresh) |
 | **Silver** | `staging` | Cleaned, renamed, correctly-typed | views |
 | **Gold** | `marts` | Star schema (fact + dimensions) for BI | tables |
+
+### Tech stack
+
+| | |
+|---|---|
+| **Warehouse** | PostgreSQL 16 |
+| **Transformations** | dbt 1.8 (`dbt-postgres`) |
+| **Orchestration** | Apache Airflow 3.0.1 (LocalExecutor) |
+| **BI** | Metabase |
+| **Packaging** | Docker Compose |
 
 ---
 
