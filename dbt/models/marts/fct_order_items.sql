@@ -1,3 +1,4 @@
+
 -- Central fact of the star schema.
 -- Grain: one row per item line within an order (order_id + order_item_id).
 -- Foreign keys point at dim_customers, dim_products, dim_sellers and dim_date;

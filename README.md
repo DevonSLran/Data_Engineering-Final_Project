@@ -82,6 +82,67 @@ marketplaces, spread over 9 related CSV files.
 | `product_category_name_translation.csv` | `product_category_name_translation` | 71 |
 | | **Total** | **1,550,922** |
 
+### Data model — star schema
+
+Gold models the order-item fact at the **order-item grain**, surrounded by four
+conformed dimensions (a classic star schema). This is the entity-relationship
+model that the Metabase dashboards query:
+
+```mermaid
+erDiagram
+    dim_customers ||--o{ fct_order_items : customer_id
+    dim_products  ||--o{ fct_order_items : product_id
+    dim_sellers   ||--o{ fct_order_items : seller_id
+    dim_date      ||--o{ fct_order_items : order_purchase_date_key
+
+    fct_order_items {
+        text order_item_key PK
+        text order_id
+        int order_item_id
+        text customer_id FK
+        text product_id FK
+        text seller_id FK
+        int order_purchase_date_key FK
+        text order_status
+        numeric price
+        numeric freight_value
+        numeric item_total_value
+        numeric delivery_days
+        numeric delivery_vs_estimate_days
+    }
+    dim_customers {
+        text customer_id PK
+        text customer_unique_id
+        text customer_city
+        text customer_state
+    }
+    dim_products {
+        text product_id PK
+        text product_category
+        text product_category_pt
+    }
+    dim_sellers {
+        text seller_id PK
+        text seller_city
+        text seller_state
+    }
+    dim_date {
+        int date_key PK
+        date date
+        int year
+        int month
+        bool is_weekend
+    }
+```
+
+| Table | Grain | Rows |
+|-------|-------|------|
+| `fct_order_items` | one item line per order | 112,650 |
+| `dim_customers` | customer_id (per-order key) | 99,441 |
+| `dim_products` | product_id | 32,951 |
+| `dim_sellers` | seller_id | 3,095 |
+| `dim_date` | one calendar day | 774 |
+
 ---
 
 ## Project structure
@@ -158,6 +219,41 @@ docker compose up -d
 
 ---
 
+## Expected Output
+
+After a successful trigger you should see the DAG complete all seven tasks, and
+the Metabase dashboards populate from the Gold (`marts`) schema.
+
+### Airflow DAG — graph view (successful run)
+
+All seven tasks run in sequence and finish green
+(`extract_raw → load_bronze → dbt_run_staging → dbt_test_staging → dbt_run_marts → dbt_test_marts → dbt_docs_generate`):
+
+![Airflow DAG — olist_elt_pipeline, all 7 tasks green](img/airflow_Dag.png)
+
+### Metabase dashboards
+
+Built on the `marts` (Gold) schema; three charts answer concrete business
+questions.
+
+> **Metabase connection note:** Metabase runs *inside* the Docker network, so
+> connect it to the warehouse using host **`warehouse`** and port **`5432`**
+> (the internal port) — *not* `localhost:5442`.
+
+**1. Revenue by Product Category** — where the money comes from.
+
+![Revenue by Product Category](img/Revenue_by_Product_Category.png)
+
+**2. Monthly Revenue Trend** — revenue growth across 2016–2018.
+
+![Monthly Revenue Trend](img/Monthly_Revenue_Trend.png)
+
+**3. Delivery Performance by State** — average delivery days by customer state.
+
+![Delivery Performance by State](img/Delivery_Performance_by_State.png)
+
+---
+
 ## Pipeline walkthrough
 
 ### 🥉 Bronze — `ingestion/load_raw.py`
@@ -188,60 +284,8 @@ materialized **`incremental`** (on `order_purchase_timestamp`, keyed by
 only (re)loads orders at/after the high-water mark and `delete+insert`s them —
 so re-running the same day is idempotent and cheap.
 
-```mermaid
-erDiagram
-    dim_customers ||--o{ fct_order_items : customer_id
-    dim_products  ||--o{ fct_order_items : product_id
-    dim_sellers   ||--o{ fct_order_items : seller_id
-    dim_date      ||--o{ fct_order_items : order_purchase_date_key
-
-    fct_order_items {
-        text order_item_key PK
-        text order_id
-        int order_item_id
-        text customer_id FK
-        text product_id FK
-        text seller_id FK
-        int order_purchase_date_key FK
-        text order_status
-        numeric price
-        numeric freight_value
-        numeric item_total_value
-        numeric delivery_days
-        numeric delivery_vs_estimate_days
-    }
-    dim_customers {
-        text customer_id PK
-        text customer_unique_id
-        text customer_city
-        text customer_state
-    }
-    dim_products {
-        text product_id PK
-        text product_category
-        text product_category_pt
-    }
-    dim_sellers {
-        text seller_id PK
-        text seller_city
-        text seller_state
-    }
-    dim_date {
-        int date_key PK
-        date date
-        int year
-        int month
-        bool is_weekend
-    }
-```
-
-| Table | Grain | Rows |
-|-------|-------|------|
-| `fct_order_items` | one item line per order | 112,650 |
-| `dim_customers` | customer_id (per-order key) | 99,441 |
-| `dim_products` | product_id | 32,951 |
-| `dim_sellers` | seller_id | 3,095 |
-| `dim_date` | one calendar day | 774 |
+> The entity-relationship diagram and per-table row counts for this star schema
+> are shown above under [**Dataset → Data model**](#data-model--star-schema).
 
 ---
 
@@ -264,7 +308,8 @@ extract_raw → load_bronze → dbt_run_staging → dbt_test_staging
 - **`dbt_run/test_*`** — build + test Silver, then Gold.
 - **`dbt_docs_generate`** — builds the dbt docs site (`manifest.json` + `catalog.json`).
 
-![Airflow DAG — olist_elt_pipeline, all 7 tasks green](img/airflow_Dag.png)
+The graph-view screenshot of a successful run is shown under
+[**Expected Output**](#airflow-dag--graph-view-successful-run).
 
 ---
 
@@ -301,34 +346,57 @@ docker compose exec airflow-scheduler /opt/dbt-venv/bin/dbt docs serve \
 
 ---
 
-## Dashboards (Metabase)
+## Findings & Conclusion
 
-Built on the `marts` (Gold) schema. Three charts answer concrete business
-questions.
+Reading the three Gold-backed dashboards together:
 
-> **Metabase connection note:** Metabase runs *inside* the Docker network, so
-> connect it to the warehouse using host **`warehouse`** and port **`5432`**
-> (the internal port) — *not* `localhost:5442`.
+- **Revenue is concentrated in a handful of categories.** A small set of product
+  categories (health & beauty, watches & gifts, bed/bath/table, sports & leisure)
+  drives a disproportionate share of total revenue — a classic long-tail
+  distribution where the top ~10 categories dominate and the remaining dozens
+  contribute marginally.
+- **The business grew strongly across 2016–2018.** The monthly revenue trend
+  climbs steeply through 2017 and into 2018 from a near-zero 2016 base, with the
+  tail months thinning out as the dataset's coverage ends — consistent with
+  Olist's real growth over the period.
+- **Delivery performance varies widely by state.** Average delivery time is
+  fastest in the southeastern states near the sellers (e.g. São Paulo) and
+  markedly slower for remote northern/north-eastern states, where orders travel
+  much farther — a clear logistics signal for where to add fulfilment capacity.
 
-<!-- ============================================================ -->
-<!-- TODO (teammate): Metabase dashboards + screenshots           -->
-<!-- ============================================================ -->
+**Conclusion.** The pipeline successfully turns nine raw, untyped CSVs into a
+trustworthy, queryable star schema: the medallion layers separate raw landing
+from cleaning from business modeling, dbt tests gate every layer so bad data
+never reaches Gold, and Airflow orchestrates the entire extract-to-docs path on a
+schedule. The resulting Gold tables answer real commercial questions
+(what sells, how revenue trends, where delivery lags) directly in Metabase
+without any further hand-wrangling.
 
-### 1. Revenue by Product Category
+---
 
-![Revenue by Product Category](img/Revenue_by_Product_Category.png)
+## Known Limitations
 
-> 📸 Revenue distribution by product category.
-### 2. Monthly Revenue Trend
+- **Static, historical dataset.** Olist is a fixed 2016–2018 dump, so the
+  `@daily` schedule has no genuinely new data to ingest. The schedule
+  demonstrates **idempotent** re-runs (Bronze full-refresh, incremental fact)
+  rather than true incremental capture; on a live feed the incremental fact
+  would pick up only the new slice, but here it is a no-op after the first load.
+- **Geolocation & reviews are excluded from Gold.** Both exist in Bronze/Silver
+  but don't fit the order-item grain cleanly (geolocation has ~1M rows with no
+  clean FK; `review_id` legitimately repeats across orders), so they're kept out
+  of the star schema.
+- **`dim_customers` is keyed at the per-order grain.** Olist generates a fresh
+  `customer_id` per order, so the dimension matches the fact's grain rather than
+  the real person. The true-person key (`customer_unique_id`) is carried as an
+  attribute, so unique-buyer counts require a `count(distinct …)`.
+- **No production hardening.** As a course project, tasks use `retries: 1` with
+  no alerting, no DAG SLAs, and no `dbt source freshness` checks. Production
+  would add `on_failure_callback` (Slack/email), backoff retries, and freshness
+  monitoring.
+- **Single-node, local-only.** The stack runs on Airflow's `LocalExecutor` in
+  Docker Compose on one machine — fine for this dataset, but not horizontally
+  scalable and not a deployment topology.
 
-![Monthly Revenue Trend](img/Monthly_Revenue_Trend.png)
-
-> 📸 Monthly revenue trend analysis.
-### 3. Delivery Performance by State
-
-![Delivery Performance by State](img/Delivery_Performance_by_State.png)
-
-> 📸 Delivery performance comparison across states.
 ---
 
 ## Design decisions & notes
