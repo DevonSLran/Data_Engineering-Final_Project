@@ -401,36 +401,25 @@ without any further hand-wrangling.
 
 ## Design decisions & notes
 
-- **"Daily" on a static dataset.** The Olist source is a fixed 2016–2018
-  historical dump, so there is no genuinely "new" data each day. The pipeline
-  is honest about this: Bronze is a daily **full refresh** (drop + reload), and
-  `fct_order_items` loads **incrementally** on `order_purchase_timestamp`. Both
-  make re-running a given day idempotent (the same input always yields the
-  same warehouse state), which is the property the daily schedule is meant to
-  demonstrate. On a live feed the incremental fact would pick up only the new
-  slice; here it's a no-op after the first load.
+*Choices made and why — distinct from [Known Limitations](#known-limitations)
+above, which lists what the project deliberately does **not** do.*
+
+- **Idempotent materialization (full-refresh Bronze + incremental Gold).** Bronze
+  drops and reloads each table every run, while `fct_order_items` is an
+  **incremental** model on `order_purchase_timestamp` (keyed by `order_item_key`,
+  `delete+insert`). The point isn't to skip work on this static dataset — it's
+  that any scheduled re-run yields the exact same warehouse state, which is the
+  property a daily pipeline must have. The first run builds all history; later
+  runs only touch the high-water-mark slice (and `--full-refresh` rebuilds from
+  scratch on demand).
 - **dbt in an isolated venv.** dbt is installed into its own
   `/opt/dbt-venv` inside the Airflow image (from a fully-pinned
   `dbt-requirements.txt` lockfile) so its dependencies never collide with
   Airflow's pinned constraint set. The DAG calls it by absolute path.
-- **`dim_customers` grain.** It's keyed on `customer_id`, which in Olist is
-  generated **per order** (one row per order, 99,441 total), not on the real
-  person. That's deliberate: the fact only carries the order-scoped
-  `customer_id`, so the dimension must match that grain to join. The true-person
-  key, `customer_unique_id`, is carried through as an attribute, so unique-buyer
-  counts are still one `count(distinct …)` away.
-- **Geolocation & reviews excluded from Gold.** Both are available in
-  Bronze/Silver but don't fit the order-item grain cleanly (geolocation has
-  ~1M rows with no clean FK; reviews repeat `review_id`), so they're kept out
-  of the star schema.
 - **Airflow 3 specifics.** v3 splits the API server, scheduler, and
   dag-processor into separate services and requires
   `AIRFLOW__CORE__EXECUTION_API_SERVER_URL` and a shared
   `AIRFLOW__API_AUTH__JWT_SECRET` across containers for task execution to work.
-- **Production hardening (not built).** This is a course project: tasks use
-  `retries: 1` and there's no alerting. For production I'd add an
-  `on_failure_callback` (Slack/email), more aggressive retries with backoff,
-  SLAs on the DAG, and source-freshness checks via `dbt source freshness`.
 
 ---
 
